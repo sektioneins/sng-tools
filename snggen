@@ -1,0 +1,613 @@
+#!/usr/bin/env php
+<?php
+//
+// SNGGen Tool - Generate Snuffleupagus configuration files from templates
+// This tool is part of the Suhosin-NG Tools Suite - https://github.com/sektioneins/sng-tools
+//
+// Copyright 2021, SektionEins GmbH
+//
+// The SNGGen Tool is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// The SNGGen Tool is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Lesser Public License for more details.
+//
+// You should have received a copy of the GNU Lesser Public License
+// along with Foobar.  If not, see <https://www.gnu.org/licenses/>.
+//
+
+class SNGGen {
+	public const version = '0.1';
+	public const sng_url = 'https://github.com/sektioneins/sng-tools';
+
+	public const sep = "\n############################# ### # ---------\n";
+	public const answers_yncx = [
+		['text' => '[y] Yes, enable this feature.', 'answer' => 'y'],
+		['text' => '[n] No. Disable this feature, please.', 'answer' => 'n'],
+		['text' => '[c] Comment out. Include feature in configuration, but leave it commented out for now.', 'answer' => 'c'],
+		['text' => '[x] Exclude. Do not include this feature at all.', 'answer' => 'x']
+	];
+
+	public static $templates = [];
+	public $cfg = [
+		'o' => '--', // output file
+		'force' => false, // force output file override
+	];
+	public $answers = [];
+	public $width = 100;
+
+	public function __construct() {}
+
+	public static function gen_yncx_template($line_desc, $enable_str, $disable_str) {
+		return function($answer, $tmpl) use ($line_desc, $enable_str, $disable_str) {
+			if ($answer === 'x') { return; }
+			SNGGen::print_tmpl_start($tmpl, $answer, $line_desc);
+			switch ($answer) {
+				case 'c':
+					echo '#', str_replace("\n", "\n#", $enable_str), "\n";
+					break;
+				case 'y':
+					echo $enable_str, "\n";
+					break;
+				case 'n':
+					echo $disable_str, "\n";
+			}
+		};
+	}
+
+	public static function get_tmpl_answer_text($tmpl, $answer) {
+		foreach ($tmpl['answers'] as $a) {
+			if ($a['answer'] == $answer) { return $a['text']; }
+		}
+		return false;
+	}
+
+	public static function default_read_validator($in, $tmpl) {
+		$valid = array_column($tmpl['answers'], 'answer');
+		return in_array($in, $valid);
+	}
+
+	public static function read_multichoice($tmpl) {
+		$validator = self::class . '::default_read_validator';
+		if (array_key_exists('validator', $tmpl)) {
+			$validator = $tmpl['validator'];
+		}
+		// $valid = array_column($tmpl['answers'], 'answer');
+		$default = $tmpl['default'];
+		$in = '';
+		do {
+			echo "Answer [default=$default]: ";
+			$in = fgets(STDIN);
+			if ($in === false) {
+				return false;
+			}
+			$in = strtolower(trim($in));
+			if ($in == '') {
+				$in = $default;
+			}
+			// echo "in=$in\n";	
+		} while (!$validator($in, $tmpl));
+		return $in;
+	}
+
+	public function do_qa() {
+		foreach (self::$templates as $tmpl_name => $tmpl) {
+			if (array_key_exists('text', $tmpl)) {
+				echo wordwrap($tmpl['text'], $this->width) . "\n\n";
+			}
+
+			if (!array_key_exists('question', $tmpl)) { continue; }
+			echo "\n|==========[ ", $tmpl_name, " ]==========>\n\n";
+			echo wordwrap($tmpl['question'], $this->width) . "\n\n";
+
+			if (!array_key_exists('answers', $tmpl)) { continue; }
+			foreach ($tmpl['answers'] as $a) {
+				echo wordwrap($a['text'], $this->width) . "\n";
+			}
+			echo "\n";
+
+			if (array_key_exists($tmpl_name, $this->answers)) {
+				$tmpl['default'] = $this->answers[$tmpl_name];
+			}
+			$answer = self::read_multichoice($tmpl);
+			if ($answer === false) { return false; }
+			$this->answers[$tmpl_name] = $answer;
+			echo "Ok. Storing answer `" . self::get_tmpl_answer_text($tmpl, $answer) . "`\n";
+		}
+	}
+
+	public function gen_rules() {
+		ob_start();
+		foreach (self::$templates as $tmpl_name => $tmpl) {
+			if (!array_key_exists('template', $tmpl)) { continue; }
+			$this->process_template($tmpl_name, $tmpl);
+		}
+		$rules = ob_get_contents();
+		ob_end_clean();
+
+		if ($this->cfg['o'] === '--') {
+			echo $rules;
+			return;
+		}
+
+		if (file_exists($this->cfg['o']) && !$this->cfg['force']) {
+			error_exit("Output file '{$this->cfg['o']}' exists. Use -f to override.");
+		}
+
+		$fh = fopen($this->cfg['o'], 'w');
+		if ($fh === false) {
+			error_exit("Unable to write file '{$this->cfg['o']}'");
+		}
+		chmod($this->cfg['o'], 0600);
+		fwrite($fh, $rules);
+		fclose($fh);
+
+		print_stderr("Output written to '{$this->cfg['o']}' with file permission 0600 (only read-write for current user).");
+	}
+
+	public function process_template($tmpl_name, $tmpl) {
+		$answer = null;
+		if (array_key_exists($tmpl_name, $this->answers)) {
+			$answer = $this->answers[$tmpl_name];
+		} else if (isset($tmpl['default'])) {
+			$answer = $tmpl['default'];
+		}
+		$tmpl['name'] = $tmpl_name;
+		switch (gettype($tmpl['template'])) {
+			case 'string':
+				eval($tmpl['template']);
+				break;
+			case 'object':
+				$tmpl['template']($answer, $tmpl);
+				break;
+		}
+	}
+
+	public static function print_tmpl_start($tmpl, $answer, $title) {
+		echo self::sep, "## | --", $tmpl['name'], "=$answer\n", '## ', $title, "\n";
+	}
+
+}
+
+
+// --------------------------------- ------ -
+
+function print_stderr($msg) {
+	fwrite(STDERR, $msg . "\n");
+}
+function error_exit($msg) {
+	print_stderr("ERROR: " . $msg);
+	exit(1);
+}
+
+function show_help() {
+	global $argv;
+	echo "SNGGen version " . SNGGen::version . "\n";
+	echo "Usage: ", $argv[0], " [actions/options]\n";
+	echo <<<'EOT'
+	  actions:
+	    --qa      start interactive Q&A session
+	    --gen     generate Snuffleupagus rules file
+	
+	  options for --qa and --gen:
+
+	EOT;
+	foreach (SNGGen::$templates as $tmpl_name => $tmpl) {
+		if (!array_key_exists('template', $tmpl) || !array_key_exists('question', $tmpl)) { continue; }
+		echo '    --', $tmpl_name, ' | default: ', $tmpl['default'], "\n";
+	}
+	echo <<<EOT
+
+	  examples:
+	    Generate default configuration and print to STDOUT:
+	      {$argv[0]} --gen
+	    Complete a questionaire and write configuration file to 'prod.rules':
+	      {$argv[0]} --qa -o prod.rules
+	
+	EOT;
+}
+
+
+
+function run() {
+	$sng = new SNGGen();
+	$longopts = ['help', 'qa', 'gen', 'force'];
+	foreach (SNGGen::$templates as $key => $tmpl) {
+		if (array_key_exists('question', $tmpl)) {
+			$longopts[] = $key . ":";
+		}
+	}
+	$opts = getopt('vo:fh', $longopts);
+	if ($opts === false) {
+		show_help();
+		exit(1);
+	}
+	foreach ($opts as $key => $value) {
+		if (array_key_exists($key, SNGGen::$templates)) {
+			$tmpl = SNGGen::$templates[$key];
+			$validator = 'SNGGen::default_read_validator';
+			if (array_key_exists('validator', $tmpl)) {
+				$validator = $tmpl['validator'];
+			}
+			$value = strtolower(trim($value));
+			if ($validator($value, $tmpl)) {
+				$sng->answers[$key] = $value;
+			} else {
+				error_exit("invalid or incorrect argument '$value' for option '--$key'");
+			}
+			continue;
+		}
+		switch ($key) {
+			case 'v':
+				echo "SNGGen version " . SNGGen::version . "\n";
+				exit(0);
+			case 'qa':
+			case 'h':
+			case 'help':
+			case 'gen':
+				$action = $key;
+				break;
+			case 'o':
+				$sng->cfg[$key] = $value;
+				break;
+			case 'f':
+			case 'force':
+				$sng->cfg['force'] = true;
+				break;
+			default:
+				error_exit("unknown option '$key'");
+		}
+	}
+
+	switch ($action) {
+		case 'qa':
+			if ($sng->do_qa() === false) {
+				print_stderr("\n--[ Goodbye. ]--\n");
+				exit(1);
+			}
+			$sng->gen_rules();
+			break;
+		case 'gen':
+			$sng->gen_rules();
+			break;
+		default:
+			show_help();
+	}
+}
+
+// --------------------------------- ------ -
+// DEFINE TEMPLATES
+
+SNGGen::$templates['qa_greeting'] = [
+	'text' => <<<'EOT'
+	Hi.
+
+	This is a short questionaire, just to get to know your system better.
+
+	EOT
+];
+
+SNGGen::$templates['head_comment'] = [
+	'template' => <<<'EOT'
+	?>
+	## This Snuffleupagus rules file was automatically generated by the
+	## Suhosin-NG Tools Suite - <?php echo SNGGen::sng_url; ?> 
+	## SNGGen Tool - version <?php echo SNGGen::version; ?>.
+	##   - See https://suhosin.org/ for more information.
+	##
+	## Timestamp: <?php echo date('c'); ?> 
+	##
+	<?php echo SNGGen::sep; ?>
+	## Let's start by enabling INI protection by default:
+	sp.ini_protection.enable();
+
+	EOT
+];
+
+SNGGen::$templates['display_errors'] = [
+	'question' => <<<'EOT'
+	Is this a configuration for a production system, or for a development setup?
+	
+	For production systems it is usually best to disable error output and similar information disclosure.
+	
+	EOT,
+	'answers' => [
+		['text' => '[p]: production system', 'answer' => 'p'],
+		['text' => '[d]: development system', 'answer' => 'd']
+	],
+	'default' => 'p',
+	'template' => function($answer, $tmpl) {
+		SNGGen::print_tmpl_start($tmpl, $answer, 'Disable error output?');
+		switch ($answer) {
+			case 'p': echo <<<'EOT'
+			## FOR PRODUCTION SYSTEMS: disable error messages and version numbers
+			sp.ini.key("display_errors").set("0").ro();
+			sp.ini.key("display_startup_errors").set("0").ro();
+			sp.ini.key("expose_php").set("0").ro();
+			
+			EOT;
+			break;
+			case 'd': echo <<<'EOT'
+			## FOR DEVELOPMENT/TESTING: allow enabling error messages and version numbers
+			sp.ini.key("display_errors").rw();
+			sp.ini.key("display_startup_errors").rw();
+			sp.ini.key("expose_php").rw();
+
+			EOT;
+			break;
+		}
+	}
+];
+
+SNGGen::$templates['log_media'] = [
+	'question' => <<<'EOT'
+	Should logging be done via PHP or via Syslog?
+	EOT,
+	'answers' => [
+		['text' => '[p] PHP', 'answer' => 'p'],
+		['text' => '[s] Syslog', 'answer' => 's']
+	],
+	'default' => 'p',
+	'template' => function($answer, $tmpl) {
+		SNGGen::print_tmpl_start($tmpl, $answer, 'Logging output can be one of \"php\", \"syslog\"');
+		echo ($answer === 'p' ? '' : '#') . 'sp.log_media("php")' . "\n";
+		echo ($answer === 's' ? '' : '#') . 'sp.log_media("syslog")' . "\n";
+	}
+];
+
+
+SNGGen::$templates['secret_key'] = [
+	'question' => <<<'EOT'
+	Session and cookie encryption needs a secret key.
+
+	Would you like me to generate a new secret key for you?
+	(This is usually a good idea, even if you are not yet planning to use any of the encryption features.)
+	EOT,
+	'answers' => [
+		['text' => '[y] Yes.', 'answer' => 'y'],
+		['text' => '[n] No.', 'answer' => 'n']
+	],
+	'default' => 'y',
+	'template' => function($answer, $tmpl) {
+		if ($answer === 'n') { return; }
+		SNGGen::print_tmpl_start($tmpl, $answer, 'Secret key for session/cookie encryption');
+		echo "sp.global.secret_key(\"" . bin2hex(random_bytes(16)) . "\"); ## this key should be unique to your installation.\n";
+	}
+];
+
+SNGGen::$templates['harden_random'] = [
+	'question' => <<<'EOT'
+	Would you like to use better random numbers for rand() and mt_rand()?
+
+	This feature basically replaces rand() and mt_rand() with get_random_int(), thereby eliminating the need for random seeds.
+	Bad or predictable random seeds have been the source of many vulnerabilities in regard to supposedly unpredictable tokens, e.g. predictable passwords or predictable CSRF tokens.
+	
+	Unless you actually need predictable pseudorandom numbers, it is highly recommended to enable this feature.
+	EOT,
+	'answers' => SNGGen::answers_yncx,
+	'default' => 'y',
+	'template' => SNGGen::gen_yncx_template('Harden random numbers?', 'sp.harden_random.enable();', 'sp.harden_random.disable();')
+];
+
+SNGGen::$templates['disable_xxe'] = [
+	'question' => <<<'EOT'
+	Would you like to disable XML External Entity (XXE) support? (probably yes)
+	EOT,
+	'answers' => SNGGen::answers_yncx,
+	'default' => 'y',
+	'template' => SNGGen::gen_yncx_template('Disable XML External Entity (XXE)?', 'sp.disable_xxe.enable();', 'sp.disable_xxe.disable();')
+];
+
+SNGGen::$templates['include_traversal'] = [
+	'question' => <<<'EOT'
+	Would you like to disable path traversal for require()/include()-style functions?
+
+	Answers can be combined, e.g. '2c' will generate a rule for `../../`, but commented out.
+	EOT,
+	'answers' => [
+		['text' => '[1..100] Detect one or more `../`', 'answer' => '3'],
+		['text' => '[c] Comment out. Include feature in configuration, but leave it commented out for now.', 'answer' => 'c'],
+		['text' => '[s] Detect `../../../`, but put it in simulation mode', 'answer' => 's'],
+		['text' => '[x] Exclude. Do not include this feature at all.', 'answer' => 'x']
+	],
+	'default' => '3c',
+	'validator' => function($in, $tmpl) {
+		return (preg_match('/^(?:(\d+)([sc]*)|x)$/', $in, $m) && $m[1] >= 1);
+	},
+	'template' => function($answer, $tmpl) {
+		if ($answer === 'x') { return; }
+		if (!preg_match('/^(?:(\d+)([sc]*)|x)$/', $answer, $m)) { return; }
+		SNGGen::print_tmpl_start($tmpl, $answer, 'Prevent include/require path traversal');
+		$cc = strstr($m[2], 'c') === false ? '' : '#';
+		$sim = strstr($m[2], 's') === false ? '' : '.simulation()';
+		echo $cc, 'sp.disable_function.function_r("^(require|include)(_once)?$").value_r("' . str_repeat('\\.\\./+', (int)$m[1]) . '").' . $sim . 'drop();', "\n";
+	}
+];
+
+SNGGen::$templates['wrappers_whitelist'] = [
+	'question' => <<<'EOT'
+	PHP is able to open URLs when opening files via fopen() or include(). If supported by your PHP configuration, the following URL wrappers are allowed by default:
+
+	file:// — Accessing local filesystem
+	http:// — Accessing HTTP(s) URLs
+	ftp:// — Accessing FTP(s) URLs
+	php:// — Accessing various I/O streams
+	zlib:// — Compression Streams
+	data:// — Data (RFC 2397)
+	glob:// — Find pathnames matching pattern
+	phar:// — PHP Archive
+	ssh2:// — Secure Shell 2
+	rar:// — RAR
+	ogg:// — Audio streams
+	expect:// — Process Interaction Streams
+
+	The list may be incomplete.
+	Depending on your configuration setting of allow_url_fopen and allow_url_include, the list may be restricted to local resources.
+	
+	Please provide a comma separated list of allowed wrappers.
+	EOT,
+	'answers' => [
+		['text' => '[comma separated list] of URL wrappers', 'answer' => ','],
+		['text' => '[c] Comment out. Include feature in configuration, but leave it commented out for now.', 'answer' => 'c'],
+		['text' => '[x] Exclude. Do not include this feature at all.', 'answer' => 'x']
+	],
+	'default' => 'file,php,phar',
+	'validator' => function($in, $tmpl) {
+		return preg_match('/^[a-z0-9]+(,[a-z0-9]+)*$/', $in);
+	},
+	'template' => function($answer, $tmpl) {
+		if ($answer === 'x') { return; }
+		SNGGen::print_tmpl_start($tmpl, $answer, 'Restrict URL wrappers');
+		if ($answer === 'c') {
+			echo '#sp.wrappers_whitelist.list("file,php,phar");', "\n";
+			return;
+		}
+		echo 'sp.wrappers_whitelist.list("' . $answer . '");', "\n";
+	}
+];
+
+SNGGen::$templates['readonly_exec'] = [
+	'question' => <<<'EOT'
+	PHP files with write access can be prevented from being executed.
+	EOT,
+	'answers' => SNGGen::answers_yncx,
+	'default' => 'c',
+	'template' => SNGGen::gen_yncx_template('Disable execution of writable PHP files?', 'sp.readonly_exec.enable();', 'sp.readonly_exec.disable();')
+];
+
+SNGGen::$templates['disable_symlink'] = [
+	'question' => <<<'EOT'
+	Creating symbolic links with filenames generated from user input can become a serious vulnerability, e.g.
+	* Gerenated links may override existing links or files.
+	* Links can circumvent other protection features such as 'open_basedir'.
+	* Links can provide access to files outside the document root.
+	
+	On the other hand, your application may need to create symbolic links in order to work correctly.
+
+	Should I disable the `symlink()` function entirely?
+	EOT,
+	'answers' => SNGGen::answers_yncx,
+	'default' => 'c',
+	'template' => SNGGen::gen_yncx_template('Disable the symlink() function?', 'sp.disable_function.function("symlink").drop();', '# not disabled.')
+];
+
+
+SNGGen::$templates['disable_eval'] = [
+	'question' => <<<'EOT'
+	The infamous eval() construct has been the source of endless vulnerabilities and code obfuscation in PHP for decades. There are legitimate use cases for eval(), but most applications can be expressed perfectly fine with other language constructs.
+
+	Would you like to to have `eval()` disabled?
+	EOT,
+	'answers' => SNGGen::answers_yncx,
+	'default' => 'n',
+	'template' => SNGGen::gen_yncx_template('Disable the eval() language construct?', 'sp.disable_function.function("symlink").drop();', <<<'EOT'
+		## eval() is not disabled.
+		## please consider restricting access to eval() using an eval_blacklist or better yet, an eval_whitelist, like so:
+		#sp.eval_blacklist.list("system,exec,shell_exec,passthru");
+		#sp.eval_whitelist.list("sin,cos,tan");
+		EOT)
+];
+
+SNGGen::$templates['protect_mail'] = [
+	'question' => <<<'EOT'
+	Newline injection into SMTP or email headers can lead to spam emails as well as information disclosure or related vulnerabilities. PHP's mail() function should not be able to accept the newline character (LF or CRLF) as input to any argument. But just in case it does not, would you like to activate a standard mail() protection filter?
+
+	EOT,
+	'answers' => SNGGen::answers_yncx,
+	'default' => 'y',
+	'template' => SNGGen::gen_yncx_template('mail() protection', <<<'EOT'
+		sp.disable_function.function("mail").param("to").value_r("\\n").alias("newline in mail() To:").drop();
+		sp.disable_function.function("mail").param("subject").value_r("\\n").alias("newline in mail() Subject:").drop();
+		sp.disable_function.function("mail").param("additional_headers").param_type("STRING").drop();
+		sp.disable_function.function("mail").param("additional_headers").param_type("NULL").allow();
+		sp.disable_function.function("mail").param("additional_headers").key_r("^(to|b?cc)$").drop();
+		EOT, <<<'EOT'
+		## mail() protection is not enabled
+		EOT)
+
+];
+
+SNGGen::$templates['mysqli_bailout'] = [
+	'question' => <<<'EOT'
+	(experimental feature)
+
+	If any Mysqli query fails in production, this may indicate an attack. This feature tries to prevent further damage by stopping the request if any SQL query fails. Of course, by then it may already be too late, but in combination with other protection mechanisms such as fail2ban, this may prevent further attacks.
+
+	Enable Mysqli bailout protection?
+
+	EOT,
+	'answers' => SNGGen::answers_yncx,
+	'default' => 'c',
+	'template' => SNGGen::gen_yncx_template('Mysqli bailout protection', <<<'EOT'
+		sp.disable_function.function("mysqli_query").ret("FALSE").drop();
+		sp.disable_function.function("mysqli::query").ret("FALSE").drop();
+		sp.disable_function.function("mysqli_real_query").ret("FALSE").drop();
+		sp.disable_function.function("mysqli::real_query").ret("FALSE").drop();
+		sp.disable_function.function("mysqli_prepare").ret("FALSE").drop();
+		sp.disable_function.function("mysqli::prepare").ret("FALSE").drop();
+		sp.disable_function.function("mysqli_stmt_execute").ret("FALSE").drop();
+		sp.disable_function.function("mysqli_stmt::execute").ret("FALSE").drop();
+		sp.disable_function.function("mysqli_execute").ret("FALSE").	
+		EOT, <<<'EOT'
+		## Mysqli bailout protection is not enabled
+		EOT)
+];
+
+SNGGen::$templates['pdo_bailout'] = [
+	'question' => <<<'EOT'
+	(experimental feature)
+
+	If any PDO query fails in production, this may indicate an attack. This feature tries to prevent further damage by stopping the request if any SQL query fails. Of course, by then it may already be too late, but in combination with other protection mechanisms such as fail2ban, this may prevent further attacks.
+
+	Enable PDO bailout protection?
+
+	EOT,
+	'answers' => SNGGen::answers_yncx,
+	'default' => 'c',
+	'template' => SNGGen::gen_yncx_template('Mysqli bailout protection', <<<'EOT'
+		sp.disable_function.function("PDO::query").ret("FALSE").drop();
+		sp.disable_function.function("PDO::prepare").ret("FALSE").drop();
+		sp.disable_function.function("PDO::exec").ret("FALSE").drop();
+		sp.disable_function.function("PDOStatement::execute").ret("FALSE").drop();
+		EOT, <<<'EOT'
+		## PDO bailout protection is not enabled
+		EOT)
+];
+
+SNGGen::$templates['upload_validation'] = [
+	'question' => <<<'EOT'
+	File upload scenarios come with a lot of attack surface and are notoriously difficult to protect. This feature provides a way to execute a script for each uploaded file in order to pre-validate user input before the actual PHP processing starts.
+
+	If you want to enable this feature, please provid the full path of your validation script:
+	EOT,
+	'answers' => [
+		['text' => '[path] script to be executed', 'answer' => ''],
+		['text' => '[c] Comment out. Include feature in configuration, but leave it commented out for now.', 'answer' => 'c'],
+		['text' => '[x] Exclude. Do not include this feature at all.', 'answer' => 'x'],
+	],
+	'default' => 'c',
+	'validator' => function($in, $tmpl) {
+		return preg_match('#^(/.*|c|x)$#', $in);
+	},
+	'template' => function($answer, $tmpl) {
+		if ($answer === 'x') { return; }
+		SNGGen::print_tmpl_start($tmpl, $answer, 'Upload validation script');
+		if ($answer === 'c') {
+			echo '#sp.upload_validation.script("/var/www/is_valid_php.py").enable();', "\n";
+			return;
+		}
+		echo 'sp.upload_validation.script("', $answer, '").enable();', "\n";
+	}
+];
+
+
+// --------------------------------- ------ -
+
+if (php_sapi_name() == "cli" && $argv && $argv[0] && realpath($argv[0]) === __FILE__) {
+	run();
+}
+	
