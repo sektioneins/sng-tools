@@ -205,7 +205,7 @@ function show_help() {
 	  examples:
 	    Generate default configuration and print to STDOUT:
 	      {$argv[0]} --gen
-	    Complete a questionaire and write configuration file to 'prod.rules':
+	    Complete a questionnaire and write configuration file to 'prod.rules':
 	      {$argv[0]} --qa -o prod.rules
 	
 	EOT;
@@ -286,7 +286,7 @@ SNGGen::$templates['qa_greeting'] = [
 	'text' => <<<'EOT'
 	Hi.
 
-	This is a short questionaire, just to get to know your system better.
+	This is a short questionnaire, just to get to know your system better.
 
 	EOT
 ];

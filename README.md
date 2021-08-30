@@ -20,7 +20,7 @@ Just clone or download a copy of the software and run it using the PHP CLI with 
   snggen --gen
   ```
 
-* Complete a questionaire and write configuration file to `prod.rules`:
+* Complete a questionnaire and write configuration file to `prod.rules`:
 
   ```
   snggen --qa -o prod.rules
