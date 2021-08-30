@@ -470,6 +470,23 @@ SNGGen::$templates['wrappers_whitelist'] = [
 	}
 ];
 
+SNGGen::$templates['allow_url'] = [
+	'question' => <<<'EOT'
+	The INI setting allow_url_fopen and allow_url_include make PHP support remote file inclusions, which can become a critical vulnerability when user input is part of the URL to be loaded. These settings can be forced to a disabled state.
+
+	Disable remote URL inclusions?
+
+	EOT,
+	'answers' => SNGGen::answers_yncx,
+	'default' => 'y',
+	'template' => SNGGen::gen_yncx_template('Prevent remote access via fopen/include', <<<'EOT'
+		sp.ini.key("allow_url_fopen").set("0").ro();
+		sp.ini.key("allow_url_include").set("0").ro();
+		EOT, <<<'EOT'
+		## allow_url_* protection is not enabled
+		EOT)
+];
+
 SNGGen::$templates['readonly_exec'] = [
 	'question' => <<<'EOT'
 	PHP files with write access can be prevented from being executed.
@@ -602,6 +619,152 @@ SNGGen::$templates['upload_validation'] = [
 		}
 		echo 'sp.upload_validation.script("', $answer, '").enable();', "\n";
 	}
+];
+
+SNGGen::$templates['ini_misc'] = [
+	'question' => <<<'EOT'
+	PHP's INI settings can make a huge difference when hardening PHP. This feature enables a set of rules to make some INI setting read-only or check or limit their value.
+
+	Prevent unwanted runtime INI changes made by ini_set() or other functions or by .htaccess?
+
+	EOT,
+	'answers' => SNGGen::answers_yncx,
+	'default' => 'y',
+	'template' => SNGGen::gen_yncx_template('Advanced INI protection', <<<'EOT'
+		## do not log read-only violations
+		## -> this setting allows PHP to prevent changes in most cases without even triggering the SP check
+		sp.ini_protection.policy_silent_ro();
+
+		## error logging options should not be set during runtime -> read-only.
+		sp.ini.key("error_log").ro();
+		sp.ini.key("error_reporting").ro();
+		sp.ini.key("log_errors").ro();
+		sp.ini.key("log_errors_max_len").set("2048").ro();
+		sp.ini.key("ignore_repeated_errors").ro();
+		sp.ini.key("ignore_repeated_source").ro();
+		sp.ini.key("syslog.filter").ro();
+
+		## disable assert. assert() in PHP can evaluate arbitrary code just like eval()
+		sp.ini.key("assert.active").set("0").ro();
+		sp.ini.key("assert.bail").ro();
+		sp.ini.key("assert.callback").ro();
+		sp.ini.key("assert.exception").ro();
+		sp.ini.key("assert.warning").ro();
+
+		## enforce color codes. prevents potential XSS
+		sp.ini.key("highlight.comment").regexp("^#[0-9a-fA-F]{6}$");
+		sp.ini.key("highlight.default").regexp("^#[0-9a-fA-F]{6}$");
+		sp.ini.key("highlight.html").regexp("^#[0-9a-fA-F]{6}$");
+		sp.ini.key("highlight.keyword").regexp("^#[0-9a-fA-F]{6}$");
+		sp.ini.key("highlight.string").regexp("^#[0-9a-fA-F]{6}$");
+
+		## prevent code execution from auto-included files
+		sp.ini.key("auto_append_file").ro();
+		sp.ini.key("auto_prepend_file").ro();
+
+		## make rarely used features read-only. you can always set the value in php.ini
+		sp.ini.key("arg_separator.input").ro();
+		sp.ini.key("arg_separator.output").ro();
+		sp.ini.key("auto_detect_line_endings").ro();
+		sp.ini.key("auto_globals_jit").ro();
+		sp.ini.key("browscap").ro();
+		sp.ini.key("default_charset").ro();
+		sp.ini.key("register_argc_argv").ro();
+		sp.ini.key("report_memleaks").ro();
+		sp.ini.key("report_zend_debug").ro();
+		sp.ini.key("request_order").ro();
+		sp.ini.key("url_rewriter.hosts").ro();
+		sp.ini.key("url_rewriter.tags").ro();
+		sp.ini.key("variables_order").ro();
+		sp.ini.key("from").ro();
+		sp.ini.key("short_open_tag").ro();
+		sp.ini.key("unserialize_callback_func").ro();
+		sp.ini.key("zend.detect_unicode").ro();
+		sp.ini.key("zend.enable_gc").ro();
+		sp.ini.key("zend.exception_ignore_args").ro();
+		sp.ini.key("zend.exception_string_param_max_len").ro();
+		sp.ini.key("zend.multibyte").ro();
+		sp.ini.key("zend.script_encoding").ro();
+
+		## setting a default mime type other than text/html can be a way to prevent XSS, so this will be set to read-write by default
+		sp.ini.key("default_mimetype").rw();
+
+		## allow reasonable socket timeouts
+		sp.ini.key("default_socket_timeout").min("1").max("300").rw();
+
+		## disable dynamic loading of PHP extensions in an apache/mod_php environment as it is a security risk.
+		sp.ini.key("enable_dl").set("0").ro();
+
+		## links to manual pages in error pages should not be set during runtime.
+		sp.ini.key("docref_ext").ro();
+		sp.ini.key("docref_root").ro();
+		sp.ini.key("html_errors").set("0").ro();
+
+		## preventing $_POST and $_FILES to be populated can be a security feature, so read-write is ok.
+		sp.ini.key("enable_post_data_reading").rw();
+
+		## disable error append/prepend which may lead to log forging.
+		sp.ini.key("error_append_string").ro();
+		sp.ini.key("error_prepend_string").set("").ro();
+
+		## restrict limit settings to prevent Denial-of-Service
+		sp.ini.key("max_execution_time").min("30").max("600").rw();
+		sp.ini.key("max_file_uploads").min("0").max("25").rw();
+		sp.ini.key("max_input_nesting_level").min("16").max("64").rw();
+		sp.ini.key("max_input_time").set("-1").ro();
+		sp.ini.key("max_input_vars").min("0").max("1024").rw();
+		sp.ini.key("memory_limit").min("4M").max("256M").rw();
+		sp.ini.key("post_max_size").max("256M").rw();
+		sp.ini.key("upload_max_filesize").max("256M").rw();
+		sp.ini.key("precision").max("14").rw();
+		sp.ini.key("unserialize_max_depth").min("128").max("4096").rw();
+		sp.ini.key("serialize_precision").ro();
+
+		## some applications rely on these filters for security
+		## even though they should implement proper input validation for each input field separately.
+		sp.ini.key("filter.default").rw();
+		sp.ini.key("filter.default_flags").rw();
+
+		## scripts will not be terminated after a client has aborted their connection.
+		## this feature may be needed for some time consuming server-side calculation
+		sp.ini.key("ignore_user_abort").rw();
+
+		## flushing may be needed
+		sp.ini.key("implicit_flush").rw();
+
+		## this feature may be required for some frameworks to work properly,
+		## but setting the include path to a fixed value is always more secure.
+		sp.ini.key("include_path").ro();
+
+		## input/output and encoding options
+		sp.ini.key("input_encoding").ro();
+		sp.ini.key("internal_encoding").ro();
+		sp.ini.key("output_encoding").ro();
+		#sp.ini.key("output_buffering").min("0").max("4096").rw();
+		sp.ini.key("output_handler").ro();
+
+		## open basedir is a security feature similar to chroot.
+		## why should it be allowed to disable this feature during runtime?
+		sp.ini.key("open_basedir").ro();
+
+		## pcre options
+		sp.ini.key("pcre.backtrack_limit").min("1000").max("1000000").rw();
+		sp.ini.key("pcre.jit").rw();
+		sp.ini.key("pcre.recursion_limit").min("1000").max("100000").ro();
+
+		## phar options
+		sp.ini.key("phar.cache_list").ro();
+		sp.ini.key("phar.readonly").ro();
+		sp.ini.key("phar.require_hash").ro();
+
+		## allow setting the user agent
+		sp.ini.key("user_agent").rw();
+
+		## allow setting the xmlrpc fault code
+		sp.ini.key("xmlrpc_error_number").rw();
+		EOT, <<<'EOT'
+		## Advanced INI protection is not enabled
+		EOT)
 ];
 
 
