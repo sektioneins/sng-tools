@@ -354,7 +354,7 @@ SNGGen::$templates['log_media'] = [
 	],
 	'default' => 'p',
 	'template' => function($answer, $tmpl) {
-		SNGGen::print_tmpl_start($tmpl, $answer, 'Logging output can be one of \"php\", \"syslog\"');
+		SNGGen::print_tmpl_start($tmpl, $answer, 'Logging output can be one of "php", "syslog"');
 		echo ($answer === 'p' ? '' : '#') . 'sp.log_media("php")' . "\n";
 		echo ($answer === 's' ? '' : '#') . 'sp.log_media("syslog")' . "\n";
 	}
@@ -406,6 +406,7 @@ SNGGen::$templates['disable_xxe'] = [
 SNGGen::$templates['include_traversal'] = [
 	'question' => <<<'EOT'
 	Would you like to disable path traversal for require()/include()-style functions?
+	This feature will detect a number of `../` via regular expression and disable a matching include/require call.
 
 	Answers can be combined, e.g. '2c' will generate a rule for `../../`, but commented out.
 	EOT,
@@ -500,7 +501,7 @@ SNGGen::$templates['readonly_exec'] = [
 SNGGen::$templates['disable_symlink'] = [
 	'question' => <<<'EOT'
 	Creating symbolic links with filenames generated from user input can become a serious vulnerability, e.g.
-	* Gerenated links may override existing links or files.
+	* Generated links may override existing links or files.
 	* Links can circumvent other protection features such as 'open_basedir'.
 	* Links can provide access to files outside the document root.
 	
@@ -516,9 +517,9 @@ SNGGen::$templates['disable_symlink'] = [
 
 SNGGen::$templates['disable_eval'] = [
 	'question' => <<<'EOT'
-	The infamous eval() construct has been the source of endless vulnerabilities and code obfuscation in PHP for decades. There are legitimate use cases for eval(), but most applications can be expressed perfectly fine with other language constructs.
+	The infamous eval() construct has been the source of endless vulnerabilities and code obfuscation in PHP for decades. There are legitimate use cases for eval(), but most applications can be written perfectly fine with other language constructs.
 
-	Would you like to to have `eval()` disabled?
+	Would you like to block all calls to `eval()`?
 	EOT,
 	'answers' => SNGGen::answers_yncx,
 	'default' => 'n',
@@ -600,7 +601,9 @@ SNGGen::$templates['upload_validation'] = [
 	'question' => <<<'EOT'
 	File upload scenarios come with a lot of attack surface and are notoriously difficult to protect. This feature provides a way to execute a script for each uploaded file in order to pre-validate user input before the actual PHP processing starts.
 
-	If you want to enable this feature, please provid the full path of your validation script:
+	If you want to enable this feature, please provide the full path of your validation script.
+	Example: /opt/scripts/validator.sh
+
 	EOT,
 	'answers' => [
 		['text' => '[path] script to be executed', 'answer' => ''],
@@ -768,6 +771,23 @@ SNGGen::$templates['ini_misc'] = [
 		EOT)
 ];
 
+SNGGen::$templates['qa_final'] = [
+	'text' => <<<'EOT'
+	Done. That's it. Finished. End of work. Emh... not quite.
+
+	There is much more to discover about Snuffleupagus features and its configuration.
+	Please have a look at the official documentation: https://snuffleupagus.readthedocs.io/config.html
+
+	Next steps:
+	* Configure how cookie encryption is pinned to a specific TLS session using
+	  sp.global.cookie_env_var("SSL_SESSION_ID");
+	* Configure some cookies to encrypt using sp.cookie.name("my_cookie_name").encrypt();
+	* Please check back every once in a while for new versions of the snggen tool.
+
+	Have a nice day.
+
+	EOT
+];
 
 // --------------------------------- ------ -
 
