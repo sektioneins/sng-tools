@@ -226,6 +226,7 @@ function run() {
 		show_help();
 		exit(1);
 	}
+	$action = 'help';
 	foreach ($opts as $key => $value) {
 		if (array_key_exists($key, SNGGen::$templates)) {
 			$tmpl = SNGGen::$templates[$key];
