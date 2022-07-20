@@ -13,6 +13,9 @@ Available tools:
 
 Just clone or download a copy of the software and run it using the PHP CLI with PHP 7 or above.
 
+## Additional documentation
+Please have a look in [wiki](https://github.com/sektioneins/sng-tools/wiki) or go directly to [SNGCheck documentation](https://github.com/sektioneins/sng-tools/wiki/SNGCheck).
+
 ## SNGGen Examples
 
 * Generate default configuration and print to STDOUT:
