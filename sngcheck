@@ -1,0 +1,501 @@
+#!/usr/bin/env php
+<?php
+//
+// SNGCheck Tool - Analyze Snuffleupagus configuration
+// This tool is part of the Suhosin-NG Tools Suite - https://github.com/sektioneins/sng-tools
+//
+// Copyright 2022, SektionEins GmbH
+//
+// The SNGCheck Tool is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// The SNGCheck Tool is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Lesser Public License for more details.
+//
+// You should have received a copy of the GNU Lesser Public License
+// along with the SNGGen Tool.  If not, see <https://www.gnu.org/licenses/>.
+//
+
+const sngcheck_version = '0.1';
+const sng_url = 'https://github.com/sektioneins/sng-tools';
+
+// ini permissions
+const SP_UNSET = 0;
+const SP_READONLY = 1;
+const SP_READWRITE = -1;
+
+// --------------------------------- ------ -
+
+function print_stderr($msg) {
+	fwrite(STDERR, $msg . "\n");
+}
+function error_exit($msg) {
+	print_stderr("ERROR: " . $msg . "\nPlease try again.");
+	exit(1);
+}
+function print_warning($msg) {
+	print_stderr("WARNING: " . $msg);
+}
+function print_info($msg) {
+	print_stderr("INFO: " . $msg);
+}
+function print_debug($msg) {
+	global $cfg;
+	if (!$cfg['debug']) { return; }
+	echo $msg . "\n";
+}
+// --------------------------------- ------ -
+// initial checks
+
+if (php_sapi_name() !== "cli") {
+	error_exit("This tool is supposed to be running as command line tool only.");
+}
+
+if (PHP_VERSION_ID < 70400) {
+	error_exit("This tools requires PHP 7.4 or above.");
+}
+
+if (extension_loaded("snuffleupagus")) {
+	if (in_array("--noreexec", $argv, true)) {
+		error_exit("Sorry. This tool requires Snuffleupagus to be initially unloaded.");
+	}
+	print_info("Snuffleupagus extension is loaded. Trying to re-execute PHP...");
+	$args = $argv;
+	array_shift($args);
+	$cmd = PHP_BINARY . " -n -f " . escapeshellarg($argv[0]) . " -- --noreexec " . join(" ", array_map(fn($x) => escapeshellarg($x), $args));
+	passthru($cmd, $retval);
+	exit($retval);
+}
+
+$cfg = [
+	'php' => PHP_BINARY,
+	'extension_dir' => ini_get("extension_dir"),
+	'sp_module' => 'snuffleupagus.so',
+	'sp_config' => false,
+	'php_defs' => false,
+	'debug' => false
+];
+
+function show_help() {
+	echo <<<'EOT'
+	--------------------------------- ------ -
+	-h / --help     this help
+	-x <dir>        extension dir
+	-c <file>       snuffleupagus configuration file
+	-d <def>        PHP ini definition
+	-m <module>     snuffleupagus extension file
+	-p <php>        PHP executable
+	-D              debug output
+
+	EOT;
+}
+
+// --------------------------------- ------ -
+// command line options
+
+echo "--------------------------------- ------ -\n";
+echo "SNGCheck Tool v" . sngcheck_version . " - Analyze Snuffleupagus configuration\n";
+echo "  (C) 2022 SektionEins GmbH\n";
+echo "This tool is part of the Suhosin-NG Tools Suite\n  -> see " . sng_url . "\n";
+
+$longopts = ['help', 'noreexec'];
+$opts = getopt('hc:d:m:p:D', $longopts);
+if ($opts === false) {
+	show_help();
+	exit(1);
+}
+
+foreach ($opts as $key => $value) {
+	switch ($key) {
+		case 'h':
+		case 'help':
+			show_help();
+			exit(0);
+		case 'x':
+			$cfg['extension_dir'] = $value;
+			break;
+		case 'c':
+			$cfg['sp_config'] = $value;
+			break;
+		case 'd':
+			if (!is_array($value)) {
+				$value = [ $value ];
+			}
+			$cfg['php_defs'] = $value;
+			break;
+		case 'm':
+			$cfg['sp_module'] = $value;
+			break;
+		case 'p':
+			$cfg['php'] = $value;
+			break;
+		case 'D':
+			$cfg['debug'] = true;
+			break;
+	}
+}
+
+echo "--------------------------------- ------ -\n";
+echo "PHP binary: " . $cfg['php'] . "\n";
+echo "PHP extension dir: " . $cfg['extension_dir'] . "\n";
+echo "SP config file: " . $cfg['sp_config'] . "\n";
+echo "--------------------------------- ------ -\n";
+
+if (strstr($cfg['sp_module'], DIRECTORY_SEPARATOR) === false) {
+	if (!is_file($cfg['extension_dir'] . DIRECTORY_SEPARATOR . $cfg['sp_module'])) {
+		error_exit("Cannot find Snuffleupagus module in extensions directory.");
+	}
+} else {
+	if (!is_file($cfg['sp_module'])) {
+		error_exit("Cannot find Snuffleupagus module '" . $cfg['sp_module'] . "'");
+	}
+}
+
+if ($cfg['sp_config'] === false) {
+	error_exit("Please specify snuffleupagus config file, e.g -c ./sp.rules");
+}
+
+if (!is_readable($cfg['sp_config'])) {
+	error_exit("Snuffleupagus config file is not readable.");
+}
+
+// --------------------------------- ------ -
+// config file parsing for unit tests
+function unquote_string($str) {
+	if (preg_match('/^".*"$/', $str)) {
+		return substr($str, 1, -1);
+	}
+	return $str;
+}
+function read_unittests($filename) {
+	$inichecks = [];
+	$dfchecks = [];
+	$fh = fopen($filename, 'r');
+	while (($line = fgets($fh)) !== false) {
+		if (preg_match('/^#\s*%\s*INI\s+(PASS|FAIL)\s+(.*?)\s+(.*)$/i', $line, $matches)) {
+			$inichecks[] = [$matches[1], unquote_string($matches[2]), unquote_string(trim($matches[3]))];
+			continue;
+		}
+		if (preg_match('/^#\s*%\s*(?:DF|DISABLED[_ ]?FUNCTION)\s+(PASS|FAIL)\s+(.*?)\s+(.*)\s*$/i', $line, $matches)) {
+			$dfcheck = ['LINE' => trim($line), 'ACTION' => $matches[1], 'FUNC' => $matches[2]];
+			$dfcheck_error = false;
+			if (preg_match_all('/(?:"(?:[^"\\\]|\\.)*"|[^\\s]+)/', $matches[3], $matches)) {
+				for ($i = 0; $i < count($matches[0]); $i += 2) {
+					if (!in_array($matches[0][$i], ['FILENAME', 'HASH', 'PARAM', 'POS', 'LINE', 'RET', 'VALUE', 'KEY', 'VAR', 'IP'], true)) {
+						$dfcheck_error = true;
+						break;
+					}
+					$dfcheck[unquote_string($matches[0][$i])] = unquote_string($matches[0][$i+1]);
+				}
+				if (!$dfcheck_error) {
+					$dfchecks[] = $dfcheck;
+				}
+			}
+
+			continue;
+		}
+		if (preg_match('/^#\s*%/', $line)) {
+			print_warning("invalid unittest on line: $line");
+
+		}
+	}
+	fclose($fh);
+	return ['ini' => $inichecks, 'df' => $dfchecks];
+}
+$cfg['tests'] = read_unittests($cfg['sp_config']);
+
+// --------------------------------- ------ -
+// dump runtime sp configuration
+$cmd = "SP_DUMP_CONFIG=1 SP_NODEBUG=1 " . $cfg['php'] . " -n";
+$cmd .= " -d display_errors=0 -d display_startup_errors=0 -d error_reporting=0 -d log_errors=0";
+$cmd .= " -d " . escapeshellarg("extension=" . $cfg['sp_module']);
+$cmd .= " -d " . escapeshellarg("sp.configuration_file=" . $cfg['sp_config']);
+if ($cfg['php_defs'] !== false) {
+	$cmd .= " " . join(" ", array_map(fn($x) => "-d " . escapeshellarg($x), $cfg['php_defs']));
+}
+$cmd .= " -r ''";
+print_debug($cmd);
+$cmd_output = shell_exec($cmd);
+print_debug($cmd_output);
+$data = unserialize($cmd_output);
+
+if ($cfg['debug'] && $data !== false) {
+	echo "--------------------------------- ------ -\n";
+	echo "--- DATA DUMP ---\n";
+	print_r($data);
+	echo "--------------------------------- ------ -\n";
+}
+if ($data === false || !is_array($data) || !isset($data['version'])) {
+	error_exit("Something went wrong." . (!$cfg['debug'] ? " Try -D for debug output." : ""));
+}
+
+// --------------------------------- ------ -
+// check compatibility
+if (!preg_match('/^0\.8/', $data['version'])) {
+	error_exit("Incompatible Snuffleupagus version. This tool works with Snuffleupages version 0.8 only. Please upgrade either sng-tools or Snuffleupagus.");
+}
+
+// --------------------------------- ------ -
+// check enabled features
+$fn_feature_enabled = function($key) use (&$data): bool {
+	return isset($data[$key]) && $data[$key] !== false;
+};
+$result = [];
+const SEV_INFO = "INFO";
+const SEV_NOTICE = "NOTICE";
+const SEV_WARNING = "WARNING";
+const SEV_ERROR = "ERROR";
+$fn_result = function($condition, $severity, $msg) use (&$result) {
+	if (!$condition) { return; }
+	$result[] = [$severity, $msg];
+};
+
+$feature = [ 'unserialize_hmac' => false, 'global.cookie_env_var' => false, 'session.encrypt' => false ];
+$feature['global.secret_key'] = $fn_feature_enabled('global.secret_key');
+$fn_result(!$feature['global.secret_key'], SEV_NOTICE, "sp.global.secret_key is not set. some features are disabeld: unserialize protection, session encryption and cookie encryption.");
+
+if ($feature['global.secret_key']) {
+	$feature['global.cookie_env_var'] = isset($data['global.cookie_env_var']) && $data['global.cookie_env_var'] !== false && $data['global.cookie_env_var'] !== "";
+	$fn_result($feature['global.cookie_env_var'], SEV_INFO, "sp.global.cookie_env_var is not set. encryption features might use a weak key.");
+
+	$feature['unserialize_hmac'] = $fn_feature_enabled('unserialize_hmac.enable');
+	$fn_result(!$feature['unserialize_hmac'], SEV_INFO, "sp.unserialize_hmac is disabled. unserialize is not protected against tampering. However it is a good idea not to call unserialize() with user input anyway.");
+
+	$feature['unserialize_hmac.sim'] = $feature['unserialize_hmac'] && $fn_feature_enabled('unserialize_hmac.sim');
+	$fn_result($feature['unserialize_hmac.sim'], SEV_INFO, "unserialize protection is enabled, but set to simulation mode.");
+
+	$feature['session.encrypt'] = $fn_feature_enabled('session.encrypt');
+	$fn_result(!$feature['session.encrypt'], SEV_INFO, "sp.session.encrypt is not set. server-side session data will not be encrypted.");
+}
+
+$feature['harden_random'] = $fn_feature_enabled('harden_random.enable');
+$fn_result(!$feature['harden_random'], SEV_INFO, "sp.harden_random is disabled. Please make sure not to trust unsafe random numbers generated my rand()/mt_rand().");
+
+$feature['readonly_exec'] = $fn_feature_enabled('readonly_exec.enable');
+$fn_result(!$feature['readonly_exec'], SEV_INFO, "sp.readonly_exec is disabled. Writable scripts will be executed.");
+$feature['readonly_exec.sim'] = $feature['readonly_exec'] && $fn_feature_enabled('readonly_exec.sim');
+$fn_result($feature['readonly_exec.sim'], SEV_INFO, "readonly_exec protection is enabled, but set to simulation mode.");
+$feature['readonly_exec.extended_checks'] = $feature['readonly_exec'] && $fn_feature_enabled('readonly_exec.extended_checks');
+$fn_result($feature['readonly_exec'] && !$feature['readonly_exec.extended_checks'], SEV_NOTICE, "sp.readonly_exec.extended_checks are disabled. ");
+
+$feature['global_strict'] = $fn_feature_enabled('global_strict.enable');
+$fn_result(!$feature['global_strict'], SEV_INFO, "sp.global_strict is disabled. PHP may implicitly cast between types, which may introduce unexpected behaviour.");
+
+$feature['upload_validation'] = $fn_feature_enabled('upload_validation.enable');
+$fn_result(!$feature['upload_validation'], SEV_INFO, "sp.upload_validation is disabled. Please make sure to validate user uploads properly.");
+$fn_result($feature['upload_validation'] && (!isset($data['upload_validation.script']) || !file_exists($data['upload_validation.script']) || !is_executable($data['upload_validation.script'])),
+	SEV_WARNING, "upload validation script does not exist or is not executable. validation will likely fail.");
+
+$feature['global.max_execution_depth'] = isset($data['global.max_execution_depth']) && $data['global.max_execution_depth'] > 0;
+$fn_result(!$feature['global.max_execution_depth'], SEV_INFO, "sp.global.max_execution_depth is not set. Worst case: This may cause a stack overflow and crash the script.");
+
+$feature['global.server_encode'] = $fn_feature_enabled('global.server_encode');
+$fn_result(!$feature['global.server_encode'], SEV_INFO, "sp.global.server_encode is disabled. This feature does URL encoding on URL related PHP variables in order to prevent all kinds of injection vulnerabilities.");
+
+$feature['global.server_strip'] = $fn_feature_enabled('global.server_strip');
+$fn_result(!$feature['global.server_strip'], SEV_INFO, "sp.global.server_strip is disabled. This feature removes dangerous characters from user supplied server variables in order to prevent injection vulnerabilities.");
+
+$feature['global.show_old_php_warning'] = $fn_feature_enabled('global.show_old_php_warning');
+$fn_result(!$feature['global.show_old_php_warning'], SEV_INFO, "sp.global.show_old_php_warning is disabled. This feature warns about out of date PHP versions.");
+
+$feature['auto_cookie_secure'] = $fn_feature_enabled('auto_cookie_secure');
+$fn_result(!$feature['auto_cookie_secure'], SEV_INFO, "sp.auto_cookie_secure is disabled. This feature adds the secure flag to all cookies, thereby preventing unencrypted cookie transfers.");
+
+$feature['xxe_protection'] = $fn_feature_enabled('xxe_protection');
+$fn_result(!$feature['xxe_protection'], SEV_INFO, "sp.xxe_protection is disabled. This feature disables XML entity loading in order to prevent XML entity injections.");
+
+$feature['eval_blacklist'] = $fn_feature_enabled('eval_blacklist.list');
+$feature['eval_blacklist.list'] = $feature['eval_blacklist'] ? $data['eval_blacklist.list'] : [];
+$feature['eval_blacklist.sim'] = $fn_feature_enabled('eval_blacklist.sim');
+
+$feature['eval_whitelist'] = $fn_feature_enabled('eval_whitelist.list');
+$feature['eval_whitelist.list'] = $feature['eval_whitelist'] ? $data['eval_whitelist.list'] : [];
+
+$fn_result(!$feature['eval_blacklist'] && !$feature['eval_whitelist'], SEV_INFO, "sp.eval_whitelist/sp.eval_blacklist is not in use.");
+$fn_result($feature['eval_blacklist.sim'] && ($feature['eval_blacklist'] || $feature['eval_whitelist']), SEV_INFO, "eval blacklist/whitelist feature is is use, but set to simulation mode.");
+
+if ($feature['eval_blacklist'] && $feature['eval_whitelist']) {
+	$eval_intersect = array_intersect($feature['eval_blacklist.list'], $feature['eval_whitelist.list']);
+	$fn_result(count($eval_intersect), SEV_WARNING, "functions in both eval_whitelist and eval_blacklist (whitelist takes precedence): " . join(", ", $eval_intersect));
+}
+
+$feature['session.sid_min_length'] = isset($data['session.sid_min_length']) && $data['session.sid_min_length'] > 0;
+$feature['session.sid_max_length'] = isset($data['session.sid_max_length']) && $data['session.sid_max_length'] > 0;
+$fn_result(!$feature['session.sid_min_length'] || !$feature['session.sid_max_length'], SEV_INFO, "session ID length protection is not enabled. please set both sp.session.sid_min_length and sp.session.sid_max_length.");
+$fn_result($feature['session.sid_min_length'] && $data['session.sid_min_length'] < 15, SEV_NOTICE, "minimum session ID length is set very low. values resulting in fewer than 128 bits are considered insecure.");
+$fn_result($feature['session.sid_max_length'] && $data['session.sid_max_length'] > 64, SEV_NOTICE, "maximum session ID length is set rather high, which may lead to DoS or improper session handling.");
+$feature['session.sim'] = ($feature['session.sid_min_length'] || $feature['session.sid_max_length'] || $feature['session.encrypt']) && $fn_feature_enabled('session.sim');
+$fn_result($feature['session.sim'],	SEV_INFO, "session protection features are enabled, but set to simulation mode only.");
+
+$feature['sloppy_comparison'] = $fn_feature_enabled('sloppy_comparison.enable');
+$fn_result(!$feature['sloppy_comparison'], SEV_INFO, "sp.sloppy_comparison is disabled. Comparing different data types is allowed, which may lead to unexpected program behaviour.");
+
+$feature['wrappers_whitelist'] = $fn_feature_enabled('wrappers_whitelist');
+$fn_result(!$feature['wrappers_whitelist'], SEV_INFO, "sp.wrappers_whitelist is not set. Restricting stream wrappers to the ones actually used can prevent file inclusion vulnerabilities.");
+
+$feature['ini_protection'] = $fn_feature_enabled('ini_protection.enable');
+$fn_result(!$feature['ini_protection'], SEV_INFO, "sp.ini_protection is disabled. PHP INI settings are not protected against tampering.");
+$feature['ini_protection.sim'] = $feature['ini_protection'] && $fn_feature_enabled('ini_protection.sim');
+$fn_result($feature['ini_protection.sim'], SEV_INFO, "ini protection is enabled, but set to simulation mode only.");
+
+$feature['ini'] = $fn_feature_enabled('ini');
+$fn_result($feature['ini_protection'] && !$feature['ini'], SEV_NOTICE, "ini protection is enabled, but no specific sp.ini rules are defined.");
+
+// --------------------------------- ------ -
+// ini protection unittests
+if ($feature['ini_protection']) {
+	foreach ($cfg['tests']['ini'] as list($action, $key, $value)) {
+		$testname = "$action|$key|$value";
+
+		foreach ($data['ini'] as $entry) {
+			if ($key === $entry['key']) { break; }
+			$entry = null;
+		}
+
+		if ($entry) {
+			if ($entry['access'] == SP_READONLY || ($entry['access'] == SP_UNSET && $data['ini_protection.policy_ro'])) {
+				// write access violation to readonly entry
+				$fn_result($action !== 'FAIL', SEV_WARNING, "ini rule \"$key\": access violation (read-only)");
+				continue;
+			}
+
+			if ($value == "") {
+				if (!$entry['allow_null']) {
+					$fn_result($action !== 'FAIL', SEV_WARNING, "ini rule \"$key\": empty or null values are forbidden - TEST: $testname");
+				}
+				continue;
+			}
+
+			if (($entry['min'] && (int)$entry['min'] > (int)$value) || ($entry['max'] && (int)$entry['max'] < (int)$value)) {
+				$fn_result($action !== 'FAIL', SEV_WARNING, "ini rule \"$key\": minimum/maximum violation  - TEST: $testname");
+				continue;
+			}
+
+			if ($entry['regexp'] !== null && !preg_match('/' . $entry['regexp'] . '/', $value)) {
+				$fn_result($action !== 'FAIL', SEV_WARNING, "ini rule \"$key\": regular expression violation  - TEST: $testname");
+				continue;
+			}
+		}
+
+		// policy check: either we have no $entry, or none of the checks above matched
+		$fn_result($action !== 'FAIL' && $data['ini_protection.policy_ro'], SEV_WARNING, "ini rule \"$key\": access violation, caught by global read-only policy - TEST: $testname");
+	}
+}
+
+// --------------------------------- ------ -
+// disabled functions
+$disabled_functions = [];
+$disabled_functions_ret = [];
+$disabled_functions_reg = [];
+$disabled_functions_reg_ret = [];
+foreach ($data['disable_function'] as $df) {
+
+	if ($df['function'] !== null && $df['function_list'] === null) {
+		if ($df['ret'] !== null || $df['ret_r'] !== null || isset($df['ret_type']) && $df['ret_type'] !== null) {
+			$disabled_functions_ret[] = $df;
+		} else {
+			$disabled_functions[] = $df;
+		}
+	} else {
+		if ($df['ret'] !== null || $df['ret_r'] !== null || isset($df['ret_type']) && $df['ret_type'] !== null) {
+			$disabled_functions_reg_ret[] = $df;
+		} else {
+			$disabled_functions_reg[] = $df;
+		}
+	}
+}
+foreach ($disabled_functions as $df) {
+	foreach ($disabled_functions_reg as $key => $df_reg) {
+		if ($df_reg['function_r'] === null) { continue; }
+		if (preg_match('/' . $df_reg['function_r'] . '/', $df['function'])) {
+			$fn_result(1, SEV_NOTICE, "disabled function regex /{$df_reg['function_r']}/ does not match more specific function '{$df['function']}'");
+			break;
+		}
+	}
+}
+foreach ($disabled_functions_ret as $df) {
+	foreach ($disabled_functions_reg_ret as $key => $df_reg) {
+		if ($df_reg['function_r'] === null) { continue; }
+		if (preg_match('/' . $df_reg['function_r'] . '/', $df['function'])) {
+			$fn_result(1, SEV_NOTICE, "disabled function regex /{$df_reg['function_r']}/ does not match more specific function '{$df['function']}'");
+			break;
+		}
+	}
+}
+
+function find_disabled_function($disabled_functions, $disabled_functions_reg, $fname) {
+	$ret = [];
+	foreach ($disabled_functions as $df) {
+		if ($df['function'] == $fname) { $ret[] = $df; }
+	}
+	if ($ret) { return $ret; }
+	foreach ($disabled_functions_reg as $df) {
+		if ($df['function'] == $fname || $df['function_r'] && preg_match('/' . $df['function_r'] . '/', $fname)) { $ret[] = $df; }
+	}
+	return $ret;
+}
+
+foreach ($cfg['tests']['df'] as $dfcheck) {
+	if (!isset($dfcheck['RET'])) {
+		$dflist = find_disabled_function($disabled_functions, $disabled_functions_reg, $dfcheck['FUNC']);
+	} else {
+		$dflist = find_disabled_function($disabled_functions_ret, $disabled_functions_reg_ret, $dfcheck['FUNC']);
+	}
+	foreach ($dflist as $df) {
+		if ($df['pos'] >= 0 && isset($dfcheck['POS']) && $df['pos'] != (int)$dfcheck['POS']) { continue; }
+		if ($df['param'] !== null && isset($dfcheck['PARAM']) && $df['param'] != '$'.$dfcheck['PARAM']) { continue; }
+		if ($df['param_r'] !== null && isset($dfcheck['PARAM']) && !preg_match('/'.$df['param_r'].'/', $dfcheck['PARAM'])) { continue; }
+		if ($df['filename'] !== null && isset($dfcheck['FILENAME']) && $df['filename'] != $dfcheck['FILENAME']) { continue; }
+		if ($df['filename_r'] !== null && isset($dfcheck['FILENAME']) && !preg_match('/'.$df['filename_r'].'/', $dfcheck['FILENAME'])) { continue; }
+		if ($df['hash'] !== null && isset($dfcheck['HASH']) && $df['hash'] != $dfcheck['HASH']) { continue; }
+		if ($df['line'] > 0 && isset($dfcheck['LINE']) && $df['line'] != (int)$dfcheck['LINE']) { continue; }
+		if ($df['ret'] !== null && isset($dfcheck['RET']) && $df['ret'] != $dfcheck['RET']) { continue; }
+		if ($df['ret_r'] !== null && isset($dfcheck['RET']) && !preg_match('/'.$df['ret_r'].'/', $dfcheck['RET'])) { continue; }
+		if ($df['value'] !== null && isset($dfcheck['VALUE']) && $df['value'] != $dfcheck['VALUE']) { continue; }
+		if ($df['value_r'] !== null && isset($dfcheck['VALUE']) && !preg_match('/'.$df['value_r'].'/', $dfcheck['VALUE'])) { continue; }
+		if ($df['key'] !== null && isset($dfcheck['KEY']) && $df['key'] != $dfcheck['KEY']) { continue; }
+		if ($df['key_r'] !== null && isset($dfcheck['KEY']) && !preg_match('/'.$df['key_r'].'/', $dfcheck['KEY'])) { continue; }
+		if ($df['var'] !== null && isset($dfcheck['VAR']) && $df['var'] != $dfcheck['VAR']) { continue; }
+		if ($df['cidr'] !== null && isset($dfcheck['IP'])) {
+			list($subnet, $mask) = explode('/', $df['cidr']);
+			if ((ip2long($dfcheck['IP']) & ~((1 << (32 - $mask)) - 1) ) != ip2long($subnet)) { continue ; }
+		}
+
+		if ($dfcheck['ACTION'] !== 'FAIL' ^ $df['allow']) {
+			$fn_result(1, SEV_WARNING, "DF unittest failed: {$dfcheck['LINE']}");
+			break;
+		}
+	}
+
+}
+
+// --------------------------------- ------ -
+// cookies
+if ($feature['global.secret_key'] && $feature['global.cookie_env_var'] && isset($data['cookie']) && $data['cookie']) {
+	foreach ($data['cookie'] as $cookie_r) {
+		if (!$cookie_r['name_r']) { continue; }
+		foreach ($data['cookie'] as $cookie) {
+			if (!$cookie['name']) { continue; }
+			if (preg_match('/'.$cookie_r['name_r'].'/', $cookie['name'])) {
+				$fn_result(1, SEV_NOTICE, "cookie rule with name '" . $cookie['name'] . "' take precedence over regex rule /".$cookie_r['name_r']."/");
+			}
+		}
+	}
+}
+
+// --------------------------------- ------ -
+
+if (count($result) == 0) {
+	echo "No problems found. Have a nice day.\n";
+	exit(0);
+}
+foreach ([SEV_ERROR, SEV_WARNING, SEV_NOTICE, SEV_INFO] as $severity) {
+	foreach ($result as $entry) {
+		if ($entry[0] !== $severity) { continue; }
+		printf("[%-7s] %s\n", $entry[0], $entry[1]);
+	}
+}

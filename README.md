@@ -7,6 +7,7 @@ The SNG Tools Suite is a set of tools to ease configuration of the PHP hardening
 Available tools:
 
 * **SNGGen:** Generate Snuffleupagus configuration files from templates
+* **SNGCheck:** Check Snuffleupagus runtime configuration for common configuration mistakes
 
 ## Installation
 
@@ -17,12 +18,32 @@ Just clone or download a copy of the software and run it using the PHP CLI with 
 * Generate default configuration and print to STDOUT:
 
   ```
-  snggen --gen
+  ./snggen --gen
   ```
 
 * Complete a questionnaire and write configuration file to `prod.rules`:
 
   ```
-  snggen --qa -o prod.rules
+  ./snggen --qa -o prod.rules
   ```
 
+## SNGCheck Examples
+
+* Show SNGCheck help once with a default installation, then with a non-standard PHP installation located in `/opt/php`
+
+  ```
+  ./sngcheck -h
+  /opt/php/root/8.1.8-64bit/bin/php -f sngcheck -- -h
+  ```
+
+* Run checks against a configuration file (requires snuffleupagus > 0.8 installed in the default extension directory)
+
+  ```
+  ./sngcheck -c /etc/php/snuffleupagus.ini
+  ```
+
+* Run checks in debug mode with custom PHP and snuffleupagus not installed (useful for development/debugging)
+
+  ```
+  /opt/php/root/8.1.8-64bit/bin/php -f sngcheck -- -m ../snuffleupagus/src/modules/snuffleupagus.so -c ./test.rules -D
+  ```
