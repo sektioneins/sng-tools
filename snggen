@@ -394,13 +394,13 @@ SNGGen::$templates['harden_random'] = [
 	'template' => SNGGen::gen_yncx_template('Harden random numbers?', 'sp.harden_random.enable();', 'sp.harden_random.disable();')
 ];
 
-SNGGen::$templates['disable_xxe'] = [
+SNGGen::$templates['xxe_protection'] = [
 	'question' => <<<'EOT'
 	Would you like to disable XML External Entity (XXE) support? (probably yes)
 	EOT,
 	'answers' => SNGGen::answers_yncx,
 	'default' => 'y',
-	'template' => SNGGen::gen_yncx_template('Disable XML External Entity (XXE)?', 'sp.disable_xxe.enable();', 'sp.disable_xxe.disable();')
+	'template' => SNGGen::gen_yncx_template('Disable XML External Entity (XXE)?', 'sp.xxe_protection.enable();', 'sp.xxe_protection.disable();')
 ];
 
 SNGGen::$templates['include_traversal'] = [
