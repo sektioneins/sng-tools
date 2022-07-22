@@ -308,6 +308,9 @@ $fn_result(!$feature['auto_cookie_secure'], SEV_INFO, "sp.auto_cookie_secure is 
 $feature['xxe_protection'] = $fn_feature_enabled('xxe_protection');
 $fn_result(!$feature['xxe_protection'], SEV_INFO, "sp.xxe_protection is disabled. This feature disables XML entity loading in order to prevent XML entity injections.");
 
+$feature['sec_fetch_check'] = $fn_feature_enabled('sec_fetch_check');
+$fn_result(!$feature['sec_fetch_check'], SEV_INFO, "sp.sec_fetch_check is disabled. This feature can protect against CSRF by checking Sec-Fetch-* headers.");
+
 $feature['eval_blacklist'] = $fn_feature_enabled('eval_blacklist.list');
 $feature['eval_blacklist.list'] = $feature['eval_blacklist'] ? $data['eval_blacklist.list'] : [];
 $feature['eval_blacklist.sim'] = $fn_feature_enabled('eval_blacklist.sim');
